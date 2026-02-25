@@ -18,17 +18,22 @@ import {
 
 import {
   apiBaseUrl,
+  completeFeishuLoginSession,
+  getMe,
   getSavedAccessToken,
   listBookmarks,
   listCategories,
-  reclassifyBookmarks,
-  searchBookmarks,
-  updateBookmarkCategory,
   listSyncRuns,
-  login,
+  loginWithPhonePassword,
   logout,
-  register,
+  reclassifyBookmarks,
+  registerWithSms,
+  searchBookmarks,
+  sendSmsCode,
+  startFeishuLogin,
   triggerSync,
+  updateBookmarkCategory,
+  updateMe,
 } from './src/api';
 import { Bookmark, Category, SyncRun, User } from './src/types';
 
@@ -61,10 +66,18 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [email, setEmail] = useState('singleuser@onemark.com');
-  const [password, setPassword] = useState('StrongPass123!');
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('13800138000');
+  const [smsCode, setSmsCode] = useState('');
+  const [authMode, setAuthMode] = useState<'sms_register' | 'phone_password_login'>('sms_register');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authAvatarUrl, setAuthAvatarUrl] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [smsSending, setSmsSending] = useState(false);
+  const [feishuLoading, setFeishuLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileUsername, setProfileUsername] = useState('');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState('');
 
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['douyin']);
@@ -97,10 +110,15 @@ export default function App() {
       try {
         const token = await getSavedAccessToken();
         if (token) {
+          const me = await getMe();
+          applyUserProfile(me);
           setAuthed(true);
           await refreshAll();
         }
       } catch (e) {
+        await logout();
+        setAuthed(false);
+        setUser(null);
         setError(getErrMessage(e));
       } finally {
         setReady(true);
@@ -190,20 +208,32 @@ export default function App() {
     return {
       bookmarkCount: bookmarks.length,
       categoryCount: categories.length,
+      platformCount: new Set(bookmarks.map((item) => item.platform)).size,
       lastSyncAt: run?.finished_at ?? run?.started_at ?? null,
     };
   }, [bookmarks.length, categories.length, latestSyncRun, syncRuns]);
+
+  function applyUserProfile(nextUser: User) {
+    setUser(nextUser);
+    setProfileUsername(nextUser.username ?? '');
+    setProfileAvatarUrl(nextUser.avatar_url ?? '');
+  }
 
   async function handleAuth() {
     setAuthLoading(true);
     setError(null);
     setNotice(null);
     try {
-      const data =
-        mode === 'register'
-          ? await register(email.trim(), password)
-          : await login(email.trim(), password);
-      setUser(data.user);
+      const data = authMode === 'sms_register'
+        ? await registerWithSms(
+          phone.trim(),
+          smsCode.trim(),
+          password,
+          authUsername.trim() || undefined,
+          authAvatarUrl.trim() || undefined,
+        )
+        : await loginWithPhonePassword(phone.trim(), password);
+      applyUserProfile(data.user);
       setAuthed(true);
       await refreshAll();
       setNotice('登录成功');
@@ -211,6 +241,77 @@ export default function App() {
       setError(getErrMessage(e));
     } finally {
       setAuthLoading(false);
+    }
+  }
+
+  async function handleSendSmsCode() {
+    if (authMode !== 'sms_register') return;
+    setSmsSending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await sendSmsCode(phone.trim());
+      if (result.debug_code) {
+        setSmsCode(result.debug_code);
+        setNotice(`验证码已发送（调试码: ${result.debug_code}）`);
+      } else {
+        setNotice('验证码已发送');
+      }
+    } catch (e) {
+      setError(getErrMessage(e));
+    } finally {
+      setSmsSending(false);
+    }
+  }
+
+  async function handleFeishuLogin() {
+    setFeishuLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const start = await startFeishuLogin();
+      await Linking.openURL(start.authorize_url);
+      setNotice('已打开飞书授权页，完成后请返回 App。');
+
+      const deadline = Date.now() + 3 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await sleep(2000);
+        const session = await completeFeishuLoginSession(start.session_id);
+        if (session.status === 'FAILED') {
+          throw new Error(session.error_message || '飞书登录失败');
+        }
+        if (session.status === 'SUCCESS' && session.token) {
+          applyUserProfile(session.token.user);
+          setAuthed(true);
+          await refreshAll();
+          setNotice('飞书登录成功');
+          return;
+        }
+      }
+
+      throw new Error('飞书登录超时，请重试');
+    } catch (e) {
+      setError(getErrMessage(e));
+    } finally {
+      setFeishuLoading(false);
+    }
+  }
+
+  async function handleSaveProfile() {
+    setProfileSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const me = await updateMe({
+        username: profileUsername.trim() || null,
+        avatar_url: profileAvatarUrl.trim() || null,
+      });
+      applyUserProfile(me);
+      setNotice('个人资料已保存');
+    } catch (e) {
+      setError(getErrMessage(e));
+    } finally {
+      setProfileSaving(false);
     }
   }
 
@@ -469,7 +570,7 @@ export default function App() {
   if (!ready) {
     return (
       <SafeAreaView style={styles.centered}>
-        <StatusBar style="dark" />
+        <StatusBar style="light" />
         <ActivityIndicator size="large" color="#FF2442" />
       </SafeAreaView>
     );
@@ -478,7 +579,9 @@ export default function App() {
   if (!authed) {
     return (
       <SafeAreaView style={styles.authContainer}>
-        <StatusBar style="dark" />
+        <StatusBar style="light" />
+        <View pointerEvents="none" style={styles.backgroundOrbPrimary} />
+        <View pointerEvents="none" style={styles.backgroundOrbAccent} />
         <View style={styles.authCard}>
           <Text style={styles.brandTitle}>OneMark</Text>
           <Text style={styles.brandSub}>跨平台收藏，一屏沉浸浏览</Text>
@@ -486,41 +589,94 @@ export default function App() {
 
           <View style={styles.authModeRow}>
             <SegmentButton
-              active={mode === 'login'}
-              label="登录"
-              onPress={() => setMode('login')}
+              active={authMode === 'sms_register'}
+              label="验证码注册"
+              onPress={() => setAuthMode('sms_register')}
             />
             <SegmentButton
-              active={mode === 'register'}
-              label="注册"
-              onPress={() => setMode('register')}
+              active={authMode === 'phone_password_login'}
+              label="手机号登录"
+              onPress={() => setAuthMode('phone_password_login')}
             />
           </View>
 
-          <TextInput
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="邮箱"
-            placeholderTextColor="#7F7F87"
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-          />
-          <TextInput
-            secureTextEntry
-            placeholder="密码"
-            placeholderTextColor="#7F7F87"
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-          />
+          {authMode === 'sms_register' ? (
+            <>
+              <TextInput
+                keyboardType="phone-pad"
+                placeholder="手机号（11位）"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={phone}
+                onChangeText={setPhone}
+              />
+              <TextInput
+                keyboardType="number-pad"
+                placeholder="验证码"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={smsCode}
+                onChangeText={setSmsCode}
+              />
+              <TextInput
+                secureTextEntry
+                placeholder="设置登录密码（至少8位）"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+              />
+              <TextInput
+                placeholder="用户名（可选）"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={authUsername}
+                onChangeText={setAuthUsername}
+              />
+              <TextInput
+                autoCapitalize="none"
+                placeholder="头像URL（可选）"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={authAvatarUrl}
+                onChangeText={setAuthAvatarUrl}
+              />
+              <Pressable style={[styles.secondaryButton, smsSending && styles.buttonDisabled]} onPress={handleSendSmsCode} disabled={smsSending}>
+                <Text style={styles.secondaryButtonText}>{smsSending ? '发送中...' : '发送验证码'}</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <TextInput
+                keyboardType="phone-pad"
+                placeholder="手机号（11位）"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={phone}
+                onChangeText={setPhone}
+              />
+              <TextInput
+                secureTextEntry
+                placeholder="密码"
+                placeholderTextColor="#7F8AA3"
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+              />
+            </>
+          )}
 
           <Pressable style={styles.primaryButton} onPress={handleAuth} disabled={authLoading}>
-            <Text style={styles.primaryButtonText}>{authLoading ? '处理中...' : mode === 'login' ? '登录' : '注册并登录'}</Text>
+            <Text style={styles.primaryButtonText}>
+              {authLoading ? '处理中...' : authMode === 'sms_register' ? '注册并登录' : '登录'}
+            </Text>
+          </Pressable>
+          <Pressable style={[styles.secondaryButton, feishuLoading && styles.buttonDisabled]} onPress={handleFeishuLogin} disabled={feishuLoading}>
+            <Text style={styles.secondaryButtonText}>{feishuLoading ? '飞书验证中...' : '飞书验证登录'}</Text>
           </Pressable>
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          <Text style={styles.tipText}>真机调试请把 EXPO_PUBLIC_API_BASE_URL 设为电脑局域网地址。</Text>
+          <Text style={styles.tipText}>真机调试可用局域网地址，或使用公网后端地址。</Text>
         </View>
       </SafeAreaView>
     );
@@ -528,16 +684,34 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.shell}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
+      <View pointerEvents="none" style={styles.backgroundOrbPrimary} />
+      <View pointerEvents="none" style={styles.backgroundOrbAccent} />
 
       <View style={styles.topBar}>
         <View>
           <Text style={styles.topTitle}>一藏 OneMark</Text>
-          <Text style={styles.topSub}>{user?.email ?? email}</Text>
+          <Text style={styles.topSub}>{getUserDisplay(user) ?? phone}</Text>
         </View>
         <Pressable style={styles.refreshButton} onPress={refreshAll}>
-          <Text style={styles.refreshButtonText}>刷新</Text>
+          <Text style={styles.refreshButtonText}>
+            {refreshing || runsLoading || bookmarksLoading ? '刷新中' : '刷新'}
+          </Text>
         </Pressable>
+      </View>
+      <View style={styles.overviewRow}>
+        <View style={styles.overviewCard}>
+          <Text style={styles.overviewNumber}>{stats.bookmarkCount}</Text>
+          <Text style={styles.overviewLabel}>收藏总数</Text>
+        </View>
+        <View style={styles.overviewCard}>
+          <Text style={styles.overviewNumber}>{stats.categoryCount}</Text>
+          <Text style={styles.overviewLabel}>分类数</Text>
+        </View>
+        <View style={styles.overviewCard}>
+          <Text style={styles.overviewNumber}>{stats.platformCount}</Text>
+          <Text style={styles.overviewLabel}>平台数</Text>
+        </View>
       </View>
 
       <View style={styles.screenWrap}>
@@ -578,7 +752,7 @@ export default function App() {
               value={searchText}
               onChangeText={setSearchText}
               placeholder="自然语言搜索：如 抖音里的健身视频"
-              placeholderTextColor="#7F7F87"
+              placeholderTextColor="#7F8AA3"
               style={styles.searchInput}
             />
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
@@ -700,12 +874,39 @@ export default function App() {
             <Text style={styles.sectionTitle}>我的</Text>
             <View style={styles.profileCard}>
               <View style={styles.avatarCircle}>
-                <Text style={styles.avatarText}>ON</Text>
+                {user?.avatar_url ? (
+                  <Image source={{ uri: user.avatar_url }} style={styles.avatarImage} />
+                ) : (
+                  <Text style={styles.avatarText}>{getAvatarText(user)}</Text>
+                )}
               </View>
               <View style={styles.profileTextWrap}>
-                <Text style={styles.profileEmail}>{user?.email ?? email}</Text>
+                <Text style={styles.profileEmail}>{getUserDisplay(user) ?? phone}</Text>
+                <Text style={styles.metaText}>手机号: {user?.phone ?? '-'}</Text>
                 <Text style={styles.metaText}>创建时间: {formatDate(user?.created_at)}</Text>
               </View>
+            </View>
+
+            <View style={styles.meCard}>
+              <Text style={styles.meCardTitle}>个人资料</Text>
+              <TextInput
+                value={profileUsername}
+                onChangeText={setProfileUsername}
+                placeholder="用户名"
+                placeholderTextColor="#7F8AA3"
+                style={styles.modalInput}
+              />
+              <TextInput
+                value={profileAvatarUrl}
+                onChangeText={setProfileAvatarUrl}
+                autoCapitalize="none"
+                placeholder="头像 URL"
+                placeholderTextColor="#7F8AA3"
+                style={styles.modalInput}
+              />
+              <Pressable style={[styles.secondaryButton, profileSaving && styles.buttonDisabled]} onPress={handleSaveProfile} disabled={profileSaving}>
+                <Text style={styles.secondaryButtonText}>{profileSaving ? '保存中...' : '保存资料'}</Text>
+              </Pressable>
             </View>
 
             <View style={styles.statsRow}>
@@ -787,7 +988,7 @@ export default function App() {
                   value={newCategoryName}
                   onChangeText={setNewCategoryName}
                   placeholder="例如：健身"
-                  placeholderTextColor="#7F7F87"
+                  placeholderTextColor="#7F8AA3"
                   style={styles.modalInput}
                 />
 
@@ -834,7 +1035,7 @@ function SegmentButton({
 }
 
 function getPlatformMeta(platform: string): PlatformMeta {
-  return PLATFORM_META[platform] ?? { name: platform, badge: platform.slice(0, 3).toUpperCase(), color: '#3D3D44' };
+  return PLATFORM_META[platform] ?? { name: platform, badge: platform.slice(0, 3).toUpperCase(), color: '#BFC7DB' };
 }
 
 function splitIntoMasonry(items: Bookmark[], estimate: (item: Bookmark) => number): [Bookmark[], Bookmark[]] {
@@ -881,9 +1082,25 @@ function hash(value: string): number {
   return h;
 }
 
+function getUserDisplay(user: User | null): string | null {
+  if (!user) return null;
+  if (user.username) return user.username;
+  if (user.phone) return user.phone;
+  return user.email;
+}
+
+function getAvatarText(user: User | null): string {
+  const value = user?.username || user?.phone || user?.email || 'OM';
+  return value.slice(0, 2).toUpperCase();
+}
+
 function getErrMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return 'Unknown error';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function formatDate(value?: string | null): string {
@@ -896,27 +1113,45 @@ function formatDate(value?: string | null): string {
 const styles = StyleSheet.create({
   shell: {
     flex: 1,
-    backgroundColor: '#F6F7FB',
+    backgroundColor: '#0B0D12',
     paddingHorizontal: 12,
     paddingTop: 8,
   },
+  backgroundOrbPrimary: {
+    position: 'absolute',
+    right: -90,
+    top: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: 'rgba(255,36,66,0.12)',
+  },
+  backgroundOrbAccent: {
+    position: 'absolute',
+    left: -120,
+    bottom: 140,
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: 'rgba(79,122,255,0.10)',
+  },
   centered: {
     flex: 1,
-    backgroundColor: '#F6F7FB',
+    backgroundColor: '#0B0D12',
     alignItems: 'center',
     justifyContent: 'center',
   },
   authContainer: {
     flex: 1,
-    backgroundColor: '#F6F7FB',
+    backgroundColor: '#0B0D12',
     paddingHorizontal: 16,
     justifyContent: 'center',
   },
   authCard: {
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#F0F1F5',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     padding: 20,
     shadowColor: '#111111',
     shadowOpacity: 0.08,
@@ -925,18 +1160,18 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   brandTitle: {
-    color: '#1A1C24',
+    color: '#F5F7FF',
     fontSize: 30,
     fontWeight: '700',
     letterSpacing: 0.3,
   },
   brandSub: {
-    color: '#6D7386',
+    color: '#B3BCD3',
     marginTop: 6,
     marginBottom: 6,
   },
   apiText: {
-    color: '#8A91A4',
+    color: '#95A0B9',
     fontSize: 12,
   },
   authModeRow: {
@@ -950,8 +1185,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     alignItems: 'center',
   },
   segmentButtonActive: {
@@ -959,7 +1194,7 @@ const styles = StyleSheet.create({
     borderColor: '#FF2442',
   },
   segmentButtonText: {
-    color: '#82889C',
+    color: '#A0AAC3',
     fontWeight: '600',
   },
   segmentButtonTextActive: {
@@ -968,9 +1203,9 @@ const styles = StyleSheet.create({
   input: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
-    color: '#1D2330',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
+    color: '#F0F3FF',
     paddingHorizontal: 12,
     paddingVertical: 12,
     marginBottom: 10,
@@ -993,22 +1228,22 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    borderColor: '#ECEEF4',
+    backgroundColor: '#151922',
+    borderColor: '#283042',
     borderWidth: 1,
     alignItems: 'center',
     paddingVertical: 13,
     marginTop: 8,
   },
   secondaryButtonText: {
-    color: '#5A6075',
+    color: '#C0C8DD',
     fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.4,
   },
   tipText: {
-    color: '#8A91A4',
+    color: '#95A0B9',
     fontSize: 12,
     marginTop: 10,
     lineHeight: 17,
@@ -1020,25 +1255,50 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   topTitle: {
-    color: '#161922',
+    color: '#F5F7FF',
     fontSize: 24,
     fontWeight: '700',
   },
   topSub: {
-    color: '#7E8598',
+    color: '#A0AAC3',
     fontSize: 12,
   },
   refreshButton: {
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#F1D8DE',
+    borderColor: '#4A2A35',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#151922',
   },
   refreshButtonText: {
     color: '#FF2442',
     fontWeight: '600',
+  },
+  overviewRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  overviewCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2A3347',
+    backgroundColor: '#151922',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  overviewNumber: {
+    color: '#F5F7FF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  overviewLabel: {
+    color: '#93A0BE',
+    fontSize: 11,
+    marginTop: 3,
   },
   screenWrap: {
     flex: 1,
@@ -1047,13 +1307,13 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   sectionTitle: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontSize: 20,
     fontWeight: '700',
     marginBottom: 10,
   },
   sectionSubTitle: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontSize: 16,
     fontWeight: '700',
     marginTop: 12,
@@ -1066,17 +1326,17 @@ const styles = StyleSheet.create({
   filterChip: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
+    borderColor: '#283042',
     paddingHorizontal: 12,
     paddingVertical: 7,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#151922',
   },
   filterChipActive: {
     backgroundColor: '#FF2442',
     borderColor: '#FF2442',
   },
   filterChipText: {
-    color: '#606579',
+    color: '#C0C8DD',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1092,11 +1352,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#151922',
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#F0F1F5',
+    borderColor: '#283042',
     marginBottom: 10,
     shadowColor: '#0E1018',
     shadowOpacity: 0.07,
@@ -1110,16 +1370,16 @@ const styles = StyleSheet.create({
   },
   coverImage: {
     width: '100%',
-    backgroundColor: '#F1F2F7',
+    backgroundColor: '#1B2130',
   },
   coverPlaceholder: {
     width: '100%',
-    backgroundColor: '#F0F1F5',
+    backgroundColor: '#1A1F2C',
     alignItems: 'center',
     justifyContent: 'center',
   },
   coverPlaceholderText: {
-    color: '#969DB1',
+    color: '#8894AE',
     fontWeight: '700',
     fontSize: 16,
   },
@@ -1129,7 +1389,7 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   cardTitle: {
-    color: '#1D2130',
+    color: '#F0F3FF',
     fontSize: 13,
     fontWeight: '600',
     lineHeight: 18,
@@ -1152,7 +1412,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   cardMetaText: {
-    color: '#72798E',
+    color: '#A8B2CA',
     fontSize: 11,
   },
   cardDot: {
@@ -1161,16 +1421,16 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
   cardTimeText: {
-    color: '#8E94A8',
+    color: '#909BB5',
     fontSize: 11,
     marginTop: 6,
   },
   searchInput: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
-    color: '#1D2330',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
+    color: '#F0F3FF',
     paddingHorizontal: 12,
     paddingVertical: 11,
     marginBottom: 8,
@@ -1178,8 +1438,8 @@ const styles = StyleSheet.create({
   searchSuggestionChip: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#F1D8DE',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#4A2A35',
+    backgroundColor: '#151922',
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
@@ -1189,12 +1449,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   metaText: {
-    color: '#7B8397',
+    color: '#A2ACC5',
     fontSize: 12,
     marginBottom: 8,
   },
   emptyText: {
-    color: '#969CAF',
+    color: '#8894AE',
     fontSize: 13,
     marginTop: 8,
   },
@@ -1211,17 +1471,17 @@ const styles = StyleSheet.create({
   platformChip: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
   platformChipActive: {
     borderColor: '#FF2442',
-    backgroundColor: '#FFE9EE',
+    backgroundColor: '#3A1D27',
   },
   platformChipText: {
-    color: '#666D82',
+    color: '#B5BED4',
     fontWeight: '600',
     fontSize: 12,
   },
@@ -1231,19 +1491,19 @@ const styles = StyleSheet.create({
   syncCard: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     padding: 12,
     marginTop: 12,
   },
   syncCardTitle: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontSize: 15,
     fontWeight: '700',
     marginBottom: 6,
   },
   syncCardText: {
-    color: '#6D7488',
+    color: '#B3BCD3',
     fontSize: 12,
     marginBottom: 2,
   },
@@ -1251,37 +1511,37 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#ECEEF4',
+    borderTopColor: '#283042',
   },
   platformResultText: {
-    color: '#3D4458',
+    color: '#D3DAEE',
     fontSize: 12,
     fontWeight: '600',
   },
   runCard: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     padding: 11,
     marginBottom: 8,
   },
   runCardTitle: {
-    color: '#1D2230',
+    color: '#F0F3FF',
     fontSize: 13,
     fontWeight: '700',
     marginBottom: 4,
   },
   runCardText: {
-    color: '#747B8F',
+    color: '#A8B2CA',
     fontSize: 12,
     marginBottom: 1,
   },
   profileCard: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1298,11 +1558,16 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
   },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 22,
+  },
   profileTextWrap: {
     marginLeft: 10,
   },
   profileEmail: {
-    color: '#1D2230',
+    color: '#F0F3FF',
     fontWeight: '600',
     marginBottom: 3,
   },
@@ -1316,18 +1581,18 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     paddingVertical: 10,
     alignItems: 'center',
   },
   statNumber: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontWeight: '700',
     fontSize: 14,
   },
   statLabel: {
-    color: '#868DA0',
+    color: '#98A3BC',
     fontSize: 11,
     marginTop: 3,
     textAlign: 'center',
@@ -1335,24 +1600,24 @@ const styles = StyleSheet.create({
   meCard: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
     padding: 12,
   },
   meCardTitle: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontWeight: '700',
     marginBottom: 4,
   },
   meCardText: {
-    color: '#767D92',
+    color: '#A5AFC7',
     fontSize: 12,
   },
   logoutButton: {
     borderRadius: 12,
-    backgroundColor: '#FFF1F4',
+    backgroundColor: '#2A1A22',
     borderWidth: 1,
-    borderColor: '#F7C8D2',
+    borderColor: '#5B2B3B',
     alignItems: 'center',
     paddingVertical: 12,
     marginTop: 12,
@@ -1367,8 +1632,8 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 10,
     borderTopWidth: 1,
-    borderTopColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
+    borderTopColor: '#283042',
+    backgroundColor: '#151922',
   },
   tabButton: {
     flex: 1,
@@ -1378,7 +1643,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   tabLabel: {
-    color: '#8A90A3',
+    color: '#95A0B9',
     fontWeight: '600',
   },
   tabLabelActive: {
@@ -1393,11 +1658,11 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.22)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
   },
   modalCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#151922',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '90%',
@@ -1412,7 +1677,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   modalTitle: {
-    color: '#171B25',
+    color: '#F5F7FF',
     fontSize: 18,
     fontWeight: '700',
   },
@@ -1427,18 +1692,18 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   modalBookmarkTitle: {
-    color: '#1E2432',
+    color: '#F0F3FF',
     fontSize: 17,
     fontWeight: '700',
     marginBottom: 8,
   },
   modalMeta: {
-    color: '#6F768B',
+    color: '#B0B9CF',
     fontSize: 12,
     marginBottom: 4,
   },
   modalSectionTitle: {
-    color: '#333A4E',
+    color: '#D7DDF0',
     fontSize: 12,
     fontWeight: '600',
     marginTop: 10,
@@ -1452,17 +1717,17 @@ const styles = StyleSheet.create({
   modalChip: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
+    borderColor: '#283042',
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#151922',
   },
   modalChipActive: {
     borderColor: '#FF2442',
-    backgroundColor: '#FFE9EE',
+    backgroundColor: '#3A1D27',
   },
   modalChipText: {
-    color: '#676E82',
+    color: '#B5BED4',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1472,9 +1737,9 @@ const styles = StyleSheet.create({
   modalInput: {
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#ECEEF4',
-    backgroundColor: '#FFFFFF',
-    color: '#1D2330',
+    borderColor: '#283042',
+    backgroundColor: '#151922',
+    color: '#F0F3FF',
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 6,
@@ -1491,8 +1756,8 @@ const styles = StyleSheet.create({
     bottom: 72,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#F3C8D0',
-    backgroundColor: '#FFF2F5',
+    borderColor: '#5B2B3B',
+    backgroundColor: '#2A1A22',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -1507,8 +1772,8 @@ const styles = StyleSheet.create({
     bottom: 126,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#C7E9D5',
-    backgroundColor: '#F2FCF6',
+    borderColor: '#2C5B45',
+    backgroundColor: '#14241D',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },

@@ -10,7 +10,7 @@ from app.models import User
 from app.security import TokenType, decode_token
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v1/auth/phone/login")
 
 
 async def get_current_user(

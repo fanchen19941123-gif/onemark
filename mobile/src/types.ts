@@ -1,6 +1,11 @@
 export type User = {
   id: string;
   email: string;
+  phone?: string | null;
+  username?: string | null;
+  avatar_url?: string | null;
+  phone_verified_at?: string | null;
+  last_login_at?: string | null;
   created_at: string;
 };
 
@@ -9,6 +14,29 @@ export type AuthResponse = {
   refresh_token: string;
   token_type: string;
   user: User;
+};
+
+export type SmsSendCodeResponse = {
+  sent: boolean;
+  purpose?: string;
+  expire_seconds: number;
+  retry_after_seconds: number;
+  debug_code?: string | null;
+};
+
+export type FeishuStartLoginResponse = {
+  session_id: string;
+  state: string;
+  authorize_url: string;
+  expires_at: string;
+};
+
+export type FeishuSessionStatusResponse = {
+  status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
+  expires_at: string;
+  completed_at?: string | null;
+  error_message?: string | null;
+  token?: AuthResponse | null;
 };
 
 export type SyncPlatformResult = {

@@ -261,6 +261,9 @@ process.stdout.write((!o.onDouyin || !o.onFavorite) ? "1" : "0");
   fi
 fi
 
+current_checked_url=$(node -e 'const o=JSON.parse(process.argv[1]);process.stdout.write(o.url||"");' "$tab_check")
+echo "URL: $current_checked_url"
+
 # Force one reload to reduce stale favorites list after recent user actions.
 run_tab_js_retry "$TAB_WI" "$TAB_TI" '(function(){try{location.reload();return "reloading";}catch(e){return "reload_failed";}})()' "reload favorites page" >/dev/null
 sleep_ms_with_jitter 1900 0.35

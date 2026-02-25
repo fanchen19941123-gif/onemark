@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     refresh_token_expire_minutes: int = 60 * 24 * 30
+    sms_code_expire_seconds: int = 300
+    sms_send_cooldown_seconds: int = 60
+    sms_code_max_attempts: int = 5
+    sms_daily_send_limit: int = 20
+    sms_debug_return_code: bool = True
 
     # App
     app_name: str = "OneMark"
@@ -42,6 +47,13 @@ class Settings(BaseSettings):
     # Alerts
     feishu_webhook_url: str = ""
     alert_dedupe_hours: int = 6
+
+    # Feishu Login (OAuth)
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_redirect_uri: str = ""
+    feishu_oauth_scope: str = "contact:user.base:readonly"
+    feishu_session_expire_seconds: int = 600
 
     # Snapshot
     snapshot_root: str = str(PROJECT_ROOT / "output" / "snapshots")

@@ -14,6 +14,16 @@
 
 ## 1. 启动后端
 
+推荐直接用统一脚本：
+
+```bash
+cd /Users/bytedance/Desktop/收藏夹管理助手
+./scripts/start_dev.sh          # 局域网开发（默认）
+./scripts/start_dev.sh --tunnel # 外网模式
+```
+
+也可以手动启动：
+
 ```bash
 cd /Users/bytedance/Desktop/收藏夹管理助手/backend
 source .venv/bin/activate
@@ -39,6 +49,12 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 export EXPO_PUBLIC_API_BASE_URL=http://192.168.1.20:8000
 ```
 
+如果手机和电脑不在同一局域网：
+
+1. 后端先起公网隧道：`/Users/bytedance/Desktop/收藏夹管理助手/scripts/start_backend_tunnel.sh`
+2. 用输出的 `https://*.trycloudflare.com` 作为 `EXPO_PUBLIC_API_BASE_URL`
+3. Expo 使用 `--tunnel` 启动
+
 ## 3. 启动移动端
 
 ```bash
@@ -47,11 +63,19 @@ npm install
 npm run start -- --clear
 ```
 
+跨局域网推荐：
+
+```bash
+export EXPO_PUBLIC_API_BASE_URL=https://<your-tunnel>.trycloudflare.com
+npm run start -- --tunnel --clear
+```
+
 ## 4. 真机使用
 
 1. iOS 用相机扫终端二维码打开 Expo。
 2. 如果打开后卡在 `Opening project...`：
-   - 手机和电脑必须在同一局域网
+   - 方案 A：手机和电脑在同一局域网
+   - 方案 B：使用 `cloudflared + expo --tunnel`（不要求同一局域网）
    - 关闭并重开 Expo Go 后重扫二维码
    - 终端重新执行 `npm run start -- --clear`
 
@@ -82,3 +106,21 @@ LLM_MODEL=kimi-coding/k2p5
 
 1. B站抓取后端目前还是占位状态。
 2. 若同步返回 `LOGIN_REQUIRED`，请确保 Chrome 已登录且可访问对应收藏页。
+
+## 8. 账户体系（手机号）
+
+当前支持：
+
+1. `验证码注册`
+   - 输入手机号
+   - 点 `发送验证码`
+   - 输入验证码 + 设置密码
+   - 可选填写用户名、头像 URL
+2. `手机号登录`
+   - 输入手机号 + 密码直接登录
+3. `我的` 页面可更新用户名与头像 URL（保存到用户信息库）
+4. `飞书验证登录`
+   - 登录页点 `飞书验证登录`
+   - 浏览器完成飞书授权后返回 App，自动轮询完成登录
+
+当前是本地调试短信通道：后端可返回 `debug_code`（并在后端日志打印），便于本地联调。
