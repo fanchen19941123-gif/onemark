@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   Linking,
   Modal,
@@ -104,6 +106,9 @@ export default function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const [newCategoryName, setNewCategoryName] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  const [tabScale] = useState(() => new Animated.Value(1));
+  const [tabOpacity] = useState(() => new Animated.Value(1));
+  const [skeletonPulse] = useState(() => new Animated.Value(0.35));
 
   useEffect(() => {
     (async () => {
@@ -168,6 +173,48 @@ export default function App() {
     setSelectedCategoryId(detailItem.category_id ?? '');
     setNewCategoryName('');
   }, [detailItem]);
+
+  useEffect(() => {
+    tabScale.setValue(0.985);
+    tabOpacity.setValue(0.65);
+    Animated.parallel([
+      Animated.timing(tabOpacity, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(tabScale, {
+        toValue: 1,
+        friction: 7,
+        tension: 70,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [activeTab, tabOpacity, tabScale]);
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(skeletonPulse, {
+          toValue: 0.75,
+          duration: 700,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(skeletonPulse, {
+          toValue: 0.35,
+          duration: 700,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [skeletonPulse]);
 
   const categoryMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -502,12 +549,7 @@ export default function App() {
 
   function renderMasonry(items: [Bookmark[], Bookmark[]], emptyText: string) {
     if (bookmarksLoading) {
-      return (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="small" color="#FF2442" />
-          <Text style={styles.metaText}>加载中...</Text>
-        </View>
-      );
+      return renderMasonrySkeleton();
     }
 
     if (items[0].length === 0 && items[1].length === 0) {
@@ -518,6 +560,38 @@ export default function App() {
       <View style={styles.masonryRow}>
         <View style={styles.column}>{items[0].map((item) => renderCard(item))}</View>
         <View style={styles.column}>{items[1].map((item) => renderCard(item))}</View>
+      </View>
+    );
+  }
+
+  function renderMasonrySkeleton() {
+    const heightsLeft = [0.88, 0.66];
+    const heightsRight = [0.72, 0.96];
+
+    return (
+      <View style={styles.masonryRow}>
+        <View style={styles.column}>
+          {heightsLeft.map((ratio, idx) => (
+            <View key={`left_${idx}`} style={styles.card}>
+              <Animated.View style={[styles.skeletonMedia, { aspectRatio: ratio, opacity: skeletonPulse }]} />
+              <View style={styles.cardBody}>
+                <Animated.View style={[styles.skeletonLineWide, { opacity: skeletonPulse }]} />
+                <Animated.View style={[styles.skeletonLineShort, { opacity: skeletonPulse }]} />
+              </View>
+            </View>
+          ))}
+        </View>
+        <View style={styles.column}>
+          {heightsRight.map((ratio, idx) => (
+            <View key={`right_${idx}`} style={styles.card}>
+              <Animated.View style={[styles.skeletonMedia, { aspectRatio: ratio, opacity: skeletonPulse }]} />
+              <View style={styles.cardBody}>
+                <Animated.View style={[styles.skeletonLineWide, { opacity: skeletonPulse }]} />
+                <Animated.View style={[styles.skeletonLineShort, { opacity: skeletonPulse }]} />
+              </View>
+            </View>
+          ))}
+        </View>
       </View>
     );
   }
@@ -714,7 +788,7 @@ export default function App() {
         </View>
       </View>
 
-      <View style={styles.screenWrap}>
+      <Animated.View style={[styles.screenWrap, { opacity: tabOpacity, transform: [{ scale: tabScale }] }]}>
         {activeTab === 'home' ? (
           <ScrollView
             contentContainerStyle={styles.scrollContent}
@@ -723,6 +797,20 @@ export default function App() {
           >
             <Text style={styles.sectionTitle}>发现</Text>
             <Text style={styles.metaText}>点击卡片直达原链接，长按可调整分类。</Text>
+            <View style={styles.heroRow}>
+              <View style={styles.heroMainCard}>
+                <Text style={styles.heroEyebrow}>智能收藏雷达</Text>
+                <Text style={styles.heroTitle}>今天新增与变化，一眼看完</Text>
+                <Text style={styles.heroMeta}>最近同步：{formatDate(stats.lastSyncAt)}</Text>
+              </View>
+              <View style={styles.heroSideCard}>
+                <Text style={styles.heroSideValue}>{stats.bookmarkCount}</Text>
+                <Text style={styles.heroSideLabel}>总收藏</Text>
+                <Text style={styles.heroSideSub}>
+                  平台 {stats.platformCount} · 分类 {stats.categoryCount}
+                </Text>
+              </View>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
               {categoryOptions.map((item) => {
                 const active = activeCategory === item.id;
@@ -934,7 +1022,7 @@ export default function App() {
             </Pressable>
           </ScrollView>
         ) : null}
-      </View>
+      </Animated.View>
 
       <View style={styles.tabBar}>
         {TAB_ITEMS.map((tab) => {
@@ -1319,6 +1407,63 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginBottom: 6,
   },
+  heroRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  heroMainCard: {
+    flex: 1.5,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#31405A',
+    backgroundColor: '#171D2A',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  heroEyebrow: {
+    color: '#89A2DB',
+    fontSize: 11,
+    letterSpacing: 0.4,
+    marginBottom: 6,
+  },
+  heroTitle: {
+    color: '#F4F6FF',
+    fontSize: 17,
+    fontWeight: '700',
+    lineHeight: 22,
+    marginBottom: 6,
+  },
+  heroMeta: {
+    color: '#A9B5D1',
+    fontSize: 11,
+  },
+  heroSideCard: {
+    flex: 1,
+    marginTop: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#4C2A35',
+    backgroundColor: '#2A1A22',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    justifyContent: 'center',
+  },
+  heroSideValue: {
+    color: '#F7F8FF',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  heroSideLabel: {
+    color: '#F07A8E',
+    fontSize: 11,
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  heroSideSub: {
+    color: '#C5A3AE',
+    fontSize: 10,
+  },
   chipsRow: {
     paddingBottom: 8,
     gap: 8,
@@ -1382,6 +1527,22 @@ const styles = StyleSheet.create({
     color: '#8894AE',
     fontWeight: '700',
     fontSize: 16,
+  },
+  skeletonMedia: {
+    width: '100%',
+    backgroundColor: '#242D40',
+  },
+  skeletonLineWide: {
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: '#273145',
+    marginBottom: 7,
+  },
+  skeletonLineShort: {
+    width: '68%',
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: '#273145',
   },
   cardBody: {
     paddingHorizontal: 10,
